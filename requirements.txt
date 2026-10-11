@@ -1,0 +1,5 @@
+chromadb>=1.5.9,<2
+pymilvus>=2.6.17,<2.7
+httpx>=0.28,<1
+python-dotenv>=1.2,<2
+PyMuPDF>=1.26,<2
