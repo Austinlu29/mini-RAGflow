@@ -154,8 +154,8 @@ class PipelineTests(unittest.TestCase):
         model = unittest.mock.Mock()
         model.embedding_id = "test-model"
         model.embed_documents.return_value = [[1, 0], [0, 1]]
-        with patch("RAG.pipeline.pdf_parser", return_value=[]) as parser, \
-                patch("RAG.pipeline.LayoutParser") as layout, \
+        with patch("document.langchain.pdf_parser", return_value=[]) as parser, \
+                patch("document.langchain.LayoutParser") as layout, \
                 patch("RAG.pipeline.create_vector_store") as store:
             layout.return_value.parse.return_value = [chunk("123456789")]
             store.return_value.add_chunks.return_value = ["first", "second"]
@@ -169,8 +169,8 @@ class PipelineTests(unittest.TestCase):
         from RAG.pipeline import index_pdf
         model = unittest.mock.Mock()
         model.embed_documents.side_effect = RuntimeError("API unavailable")
-        with patch("RAG.pipeline.pdf_parser", return_value=[]), \
-                patch("RAG.pipeline.LayoutParser") as layout, \
+        with patch("document.langchain.pdf_parser", return_value=[]), \
+                patch("document.langchain.LayoutParser") as layout, \
                 patch("RAG.pipeline.create_vector_store") as store:
             layout.return_value.parse.return_value = [chunk("body")]
             with self.assertRaises(RuntimeError):

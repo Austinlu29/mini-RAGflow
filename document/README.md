@@ -2,6 +2,22 @@
 
 现有 `pdf_parser(path)` 和 `LayoutParser().parse(elements)` 调用方式保持可用。
 
+主入库流程通过 `document.langchain` 接入 LangChain：
+
+```python
+from document.langchain import LayoutPDFLoader, LayoutDocumentSplitter
+
+documents = LayoutPDFLoader("data/test.pdf").load()
+chunks = LayoutDocumentSplitter(chunk_size=300, chunk_overlap=50).split_documents(documents)
+for chunk in chunks:
+    print(chunk.metadata["page_number"], chunk.page_content)
+```
+
+`LayoutPDFLoader` 实现 `BaseLoader`，每个布局块返回一个 `Document`；
+`metadata` 包含绝对路径 `source`、`page_number`、`block_type` 和四个坐标。
+`LayoutDocumentSplitter` 实现 `BaseDocumentTransformer`，提供 `split_documents`、
+`transform_documents` 和 `atransform_documents`，复用原有句界切分规则，保留标题和表格。
+
 ```python
 from document.pdf_parser import pdf_parser
 from document.layout_parser import LayoutParser

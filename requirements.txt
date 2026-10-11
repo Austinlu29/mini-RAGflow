@@ -3,3 +3,4 @@ pymilvus>=2.6.17,<2.7
 httpx>=0.28,<1
 python-dotenv>=1.2,<2
 PyMuPDF>=1.26,<2
+langchain-core>=1.6.6,<2

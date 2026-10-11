@@ -5,6 +5,11 @@
 返回结果统一提供 `similarity` 和 `distance = 1 - similarity`，
 分数越高越相似，不能视为正确率或概率。
 
+`DashScopeEmbedder` 现在实现 LangChain `Embeddings` 接口，原来的方法继续可用。
+`vectorstore.langchain.ChunkVectorStore` 将两种后端接入 `VectorStore`，
+`EvidenceRetriever` 直接返回带页码和来源的 `Document`，主问答链按原始余弦阈值过滤。
+完整组件用法与分数尺度见 [LangChain 架构](../README.md#langchain-架构)。
+
 安装依赖：
 
 ```powershell
@@ -57,7 +62,7 @@ print(f"已保存 {len(ids)} 个片段")
 
 ```powershell
 # 仅验证连接，不调用 embedding API、不上传文档
-.\.venv\Scripts\python.exe main.py
+.\.venv\Scripts\python.exe main.py --check
 # 显式入库默认样本，也可指定 --pdf 路径
 .\.venv\Scripts\python.exe main.py --index
 # 只查询已有片段，不重新向量化文档

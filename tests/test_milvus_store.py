@@ -10,6 +10,8 @@ from unittest.mock import patch
 from pymilvus import DataType, MilvusClient
 
 from document.element import Block
+from document.langchain import block_to_document
+from vectorstore.langchain import ChunkVectorStore, EvidenceRetriever
 from vectorstore.milvus import MilvusStore
 
 
@@ -144,6 +146,20 @@ class MilvusStoreTests(unittest.TestCase):
                        collection_name="test_chunks", dimension=2, batch_size=2)
         options.update(kwargs)
         return MilvusStore(**options)
+
+    def test_langchain_adapter_reads_and_replaces_existing_milvus_chunks(self):
+        embeddings = unittest.mock.Mock()
+        embeddings.embed_query.return_value = [1, 0]
+        embeddings.embed_documents.return_value = [[1, 0]]
+        original = self.store.add_chunks([chunk("old"), chunk("stale")], [[1, 0], [0, 1]], source="manual.pdf")
+        adapter = ChunkVectorStore(store=self.store, embeddings=embeddings)
+        retrieved = EvidenceRetriever(vectorstore=adapter).invoke("question")
+        self.assertEqual([document.id for document in retrieved], original[:1])
+        self.assertEqual(retrieved[0].metadata["page_number"], 2)
+        updated = adapter.add_documents([block_to_document(chunk("new"), source="manual.pdf")])
+        self.assertEqual(updated, original[:1])
+        self.assertEqual(self.store.count(), 1)
+        self.assertEqual(adapter.similarity_search("question")[0].page_content, "new")
 
     def test_new_collection_has_explicit_cosine_schema_and_model(self):
         self.assertEqual(len(self.client.create_calls), 1)

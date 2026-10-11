@@ -8,11 +8,12 @@ from urllib.parse import urlsplit
 
 import httpx
 from dotenv import load_dotenv
+from langchain_core.embeddings import Embeddings
 
 from document.element import Block
 
 
-class DashScopeEmbedder:
+class DashScopeEmbedder(Embeddings):
     def __init__(
         self,
         *,

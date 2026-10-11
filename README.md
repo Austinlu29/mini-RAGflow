@@ -1,6 +1,6 @@
 # MiniRAGFlow
 
-一个支持 PDF 解析、向量检索、带来源问答和多轮上下文管理的 Python 项目。
+一个基于 LangChain 组件与 LCEL 链的 Python RAG 项目，支持 PDF 解析、向量检索、带来源问答和多轮上下文管理。
 使用 DashScope `text-embedding-v2` 向量化、Milvus / Chroma 存储，以及 DeepSeek 生成经校验的原文回答。
 
 ## 功能与结构
@@ -22,6 +22,91 @@
 解析与存储说明见 [document/README.md](document/README.md) 和
 [embedding/README.md](embedding/README.md)；评测结果与复现方法见
 [evaluation/README.md](evaluation/README.md)。
+
+## LangChain 架构
+
+主流程使用 `langchain-core` 的标准接口；底层布局解析、HTTP 协议和数据库集合格式
+保留项目自己的实现。无需迁移现有 Milvus / Chroma 数据，也无需重新入库；已有
+`main.py` 命令和 `.env` 配置继续使用。
+
+```mermaid
+flowchart TD
+    PDF[PDF 文件] --> Loader[LayoutPDFLoader / Document]
+    Loader --> Splitter[LayoutDocumentSplitter]
+    Splitter --> Embedding[DashScopeEmbedder / Embeddings]
+    Embedding --> Store[ChunkVectorStore / Milvus 或 Chroma]
+    Question[用户问题] --> Rewrite[历史理解与问题改写]
+    Rewrite --> Retriever[EvidenceRetriever]
+    Store --> Retriever
+    Retriever --> Context[证据裁剪与上下文预算]
+    Context --> Prompt[ChatPromptTemplate]
+    Prompt --> Model[DeepSeekChat / BaseChatModel]
+    Model --> Parser[StrictJsonOutputParser]
+    Parser --> Validate[原文与实际发送证据双重校验]
+    Validate --> Answer[引用回答或受限无答案说明]
+    Answer --> Archive[ContextManager / SQLite 归档]
+```
+
+| 实现 | LangChain 接口 / 职责 |
+| --- | --- |
+| `document/langchain.py` | `BaseLoader` 输出 `Document`；`BaseDocumentTransformer` 保留布局进行切片 |
+| `embedding/embed.py` | `Embeddings`，文档和查询分别使用 DashScope 的 document / query 类型 |
+| `vectorstore/langchain.py` | `VectorStore` 适配旧集合；`BaseRetriever` 筛选有来源的合格证据 |
+| `llm/chat.py` | `BaseChatModel`，支持 `invoke`，保留 JSON 模式、模型预算和完整响应检查 |
+| `llm/chains.py` | `ChatPromptTemplate → 聊天模型 → StrictJsonOutputParser` |
+| `RAG/pipeline.py` | LCEL 入库链，先完成全部向量化再连接数据库写入 |
+| `RAG/qa.py` | LCEL 问答链，使用 `RunnableBranch` 分流，回答通过校验后才归档 |
+
+提示词通过模板变量传入，JSON 示例不会被误识别成占位符。JSON 解析不修复截断内容、
+不接受 Markdown 代码块；网络错误继续抛出。历史恢复和分级压缩由 `ContextManager`
+负责，并在每次模型请求前执行；历史仍不能充当本轮知识库证据。
+
+Python 中可直接组合组件：
+
+```python
+from document.langchain import LayoutPDFLoader, LayoutDocumentSplitter
+from RAG.pipeline import create_indexing_chain
+
+# 只解析和切片，不调用模型或写入数据库
+documents = LayoutPDFLoader("data/test.pdf").load()
+chunks = LayoutDocumentSplitter(chunk_size=300, chunk_overlap=50).split_documents(documents)
+print(chunks[0].page_content, chunks[0].metadata)
+
+# 执行入库链；也可继续使用 index_pdf("data/test.pdf")
+ids = create_indexing_chain(backend="chroma").invoke("data/test.pdf")
+```
+
+```python
+from embedding.embed import DashScopeEmbedder
+from llm.chat import DeepSeekChat
+from RAG.qa import QASettings, RAGQuestionAnswerer
+from vectorstore.factory import create_vector_store
+
+embedder = DashScopeEmbedder()
+store = create_vector_store(embedding_model=embedder.embedding_id, backend="chroma")
+try:
+    qa = RAGQuestionAnswerer(embedder=embedder, store=store, chat=DeepSeekChat(), settings=QASettings())
+    answer = qa.invoke("文档中描述了哪些功能？", config={"tags": ["local-rag"]})
+    # qa.ask(...) 兼容旧接口；qa.chain 是可组合的 LangChain Runnable。
+    print(answer)
+finally:
+    if hasattr(store, "close"):
+        store.close()
+```
+
+`invoke(..., config=...)` 支持 LangChain 的 callbacks 和 tags。
+同一个带 `ContextManager` 的问答实例应顺序调用，保证历史归档顺序。
+`DeepSeekChat` 专用于完整 JSON 响应，不实现工具调用或增量生成。
+
+`ChunkVectorStore.add_documents` 每次接收**同一来源的完整片段**，写入后会清理该来源
+旧的多余片段；不能用它向同一来源逐个追加 chunk。写入必需元数据为 `source` 和
+正整数 `page_number`，布局字段可选；持久化字段与现有集合一致。
+`EvidenceRetriever.min_similarity` 使用原始余弦分数，与 `RAG_MIN_SIMILARITY` 一致。
+标准 `similarity_search_with_score` 返回 `1-cosine` 距离；
+`similarity_search_with_relevance_scores` 返回 `(cosine+1)/2`，范围为 0 到 1；
+使用标准 `as_retriever` 的 relevance 阈值时需采用后一尺度。
+
+接口定义参见 [LangChain 核心组件参考](https://reference.langchain.com/python/langchain-core/langchain_core)。
 
 ## 配置与运行
 
@@ -164,6 +249,8 @@ if (-not (Test-Path .env)) { Copy-Item .env.example .env }
 
 测试使用模拟 API，不消耗真实模型额度；覆盖 AI 无答案说明、伪造内容拦截、
 真实原文输出、请求异常、交互退出，以及既有入库和检索功能。
+LangChain 集成测试还覆盖原生聊天模型和回调、LCEL 分支、实际 PDF 加载、
+既有集合适配、两种分数尺度和同来源更新。
 上下文测试另外覆盖所有压缩级别、溢出恢复到 50%、原文打包完整性、会话隔离与恢复、
 追问改写、历史不能代替 RAG 证据，以及未发送片段引用拦截。
 本地 CRUD-RAG 子集检查需要先生成评测数据；尚未生成时只跳过这一项检查。

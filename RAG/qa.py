@@ -7,9 +7,13 @@ import os
 from pathlib import Path
 
 from dotenv import load_dotenv
+from langchain_core.documents import Document
+from langchain_core.runnables import RunnableBranch, RunnableLambda, RunnablePassthrough
 
 from context_management.compression import compress_text
 from context_management.tokens import TokenCounter
+from llm.chains import create_json_chain
+from vectorstore.langchain import ChunkVectorStore, EvidenceRetriever
 
 
 EXTRACT_PROMPT = """你是严格的 RAG 原文问答助手。只依据本次 references 回答 question。
@@ -100,17 +104,55 @@ class RAGQuestionAnswerer:
         self.chat = chat
         self.settings = settings if settings is not None else QASettings.from_env()
         self.context = context
+        self.vectorstore = ChunkVectorStore(store=store, embeddings=embedder)
+        self.retriever = EvidenceRetriever(vectorstore=self.vectorstore, top_k=self.settings.top_k,
+                                           min_similarity=self.settings.min_similarity)
+        self.rewrite_chain = create_json_chain(chat, REWRITE_PROMPT)
+        self.extract_chain = create_json_chain(chat, EXTRACT_PROMPT)
+        self.no_answer_chain = create_json_chain(chat, NO_ANSWER_PROMPT)
+        extract = (
+            RunnablePassthrough.assign(result=RunnableLambda(lambda state: {"user": state["user"]})
+                                       | self.extract_chain)
+            | RunnableLambda(self._validate_extraction, name="validate_quotes")
+        )
+        answer = RunnableBranch(
+            (lambda state: not state["references"],
+             RunnableLambda(lambda state: self._no_answer_reply(state["question"]), name="no_evidence")),
+            extract,
+        )
+        process = (
+            RunnableLambda(self._resolve_state, name="resolve_question")
+            | RunnablePassthrough.assign(documents=RunnableLambda(lambda state: state["question"])
+                                          | self.retriever)
+            | RunnableLambda(self._prepare_evidence, name="prepare_context")
+            | RunnablePassthrough.assign(answer=answer)
+            | RunnableLambda(self._record_answer, name="archive_answer")
+        )
+        self.chain = RunnableLambda(self._normalize_input, name="normalize_question") | RunnableBranch(
+            (lambda state: not state["question"], RunnableLambda(lambda state: "")), process)
 
     def ask(self, question: str) -> str:
         """有依据输出原文；无依据调用 AI 生成受限的无答案回复。"""
-        if not isinstance(question, str) or not question.strip():
-            return ""
-        original_question = question.strip()
-        question = self._resolve_question(original_question)
-        answer = self._answer(question)
+        return self.invoke(question)
+
+    def invoke(self, question: str, config=None) -> str:
+        """执行 LCEL 链；config 可传入 LangChain callbacks 和运行标签。"""
+        return self.chain.invoke(question, config=config)
+
+    @staticmethod
+    def _normalize_input(question):
+        value = question.strip() if isinstance(question, str) else ""
+        return {"original_question": value, "question": value}
+
+    def _resolve_state(self, state):
+        self.retriever.top_k = self.settings.top_k
+        self.retriever.min_similarity = self.settings.min_similarity
+        return {**state, "question": self._resolve_question(state["question"])}
+
+    def _record_answer(self, state):
         if self.context is not None:
-            self.context.record(original_question, answer)
-        return answer
+            self.context.record(state["original_question"], state["answer"])
+        return state["answer"]
 
     def _resolve_question(self, question: str) -> str:
         if self.context is None:
@@ -118,7 +160,7 @@ class RAGQuestionAnswerer:
         if not self.context.has_history and TokenCounter.text(question) <= 1800:
             return question
         prepared = self.context.prepare(system=REWRITE_PROMPT, payload={"question": question}, query=question)
-        result = self.chat.complete_json(system=REWRITE_PROMPT, user=prepared.user)
+        result = self.rewrite_chain.invoke({"user": prepared.user})
         if isinstance(result, dict) and set(result) == {"question"}:
             resolved = result["question"]
             if isinstance(resolved, str) and resolved.strip() and TokenCounter.text(resolved) <= 1800:
@@ -126,12 +168,11 @@ class RAGQuestionAnswerer:
         # 超长单条提问也要遵守 DashScope 的查询长度，不将摘要当作答案。
         return compress_text(question, 1800, question)
 
-    def _answer(self, question: str) -> str:
-        hits = self.store.search(self.embedder.embed_query(question),
-                                 top_k=self.settings.top_k)
-        references = self._references(hits)
+    def _prepare_evidence(self, state):
+        question = state["question"]
+        references = self._references(state["documents"])
         if not references:
-            return self._no_answer_reply(question)
+            return {**state, "references": []}
         payload = {"question": question, "references": [
             {"reference_id": ref.reference_id, "text": ref.text} for ref in references]}
         if self.context is not None:
@@ -139,7 +180,10 @@ class RAGQuestionAnswerer:
             payload, user = prepared.payload, prepared.user
         else:
             user = json.dumps(payload, ensure_ascii=False)
-        result = self.chat.complete_json(system=EXTRACT_PROMPT, user=user)
+        return {**state, "references": references, "payload": payload, "user": user}
+
+    def _validate_extraction(self, state) -> str:
+        result, references, payload = state["result"], state["references"], state["payload"]
         answer = self._validated_answer(result, references)
         if answer:
             # 同时验证原始 RAG 文本和实际发送的压缩后文本，防止引用未发送的内容。
@@ -147,7 +191,7 @@ class RAGQuestionAnswerer:
             if any(quote["reference_id"] not in visible or quote["text"] not in visible[quote["reference_id"]]
                    for quote in result["quotes"]):
                 answer = ""
-        return answer if answer else self._no_answer_reply(question)
+        return answer if answer else self._no_answer_reply(state["question"])
 
     def _no_answer_reply(self, question: str) -> str:
         """AI 组合无答案说明；失败时使用默认说明，禁止输出库外事实。"""
@@ -155,10 +199,7 @@ class RAGQuestionAnswerer:
             payload = {"question": question, "notices": NO_ANSWER_NOTICES, "suggestions": NO_ANSWER_SUGGESTIONS}
             user = (self.context.prepare(system=NO_ANSWER_PROMPT, payload=payload, include_history=False).user
                     if self.context is not None else json.dumps(payload, ensure_ascii=False))
-            result = self.chat.complete_json(
-                system=NO_ANSWER_PROMPT,
-                user=user,
-            )
+            result = self.no_answer_chain.invoke({"user": user})
         except RuntimeError:
             return DEFAULT_NO_ANSWER_REPLY
         if isinstance(result, dict) and set(result) == {"notice", "suggestion"}:
@@ -168,22 +209,12 @@ class RAGQuestionAnswerer:
                 return notice + suggestion
         return DEFAULT_NO_ANSWER_REPLY
 
-    def _references(self, hits) -> list[Reference]:
+    def _references(self, documents: list[Document]) -> list[Reference]:
         references = []
         remaining = self.settings.max_context_chars
-        for hit in hits:
-            if not isinstance(hit, dict):
-                continue
-            score, text, metadata = hit.get("similarity"), hit.get("text"), hit.get("metadata")
-            if (type(score) not in (int, float) or not isfinite(score)
-                    or not self.settings.min_similarity <= score <= 1
-                    or not isinstance(text, str) or not text.strip()
-                    or not isinstance(metadata, dict)):
-                continue
-            source, page = metadata.get("source"), metadata.get("page_number")
-            if (not isinstance(source, str) or not source.strip()
-                    or type(page) is not int or page < 1):
-                continue
+        for document in documents:
+            text, metadata = document.page_content, document.metadata
+            source, page = metadata["source"], metadata["page_number"]
             # 只验证实际发送给模型的文本，不允许引用截断掉的部分。
             text = text[:remaining]
             if not text.strip():
