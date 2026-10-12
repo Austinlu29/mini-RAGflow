@@ -16,7 +16,7 @@ def main():
     parser = argparse.ArgumentParser(description="MiniRAGFlow DeepSeek RAG 问答客户端")
     parser.add_argument("--pdf", type=Path,
                         default=Path(__file__).resolve().parent / "data" / "test.pdf")
-    parser.add_argument("--backend", choices=("milvus", "chroma"), default=None)
+    parser.add_argument("--backend", choices=("milvus",), default=None)
     parser.add_argument("--session", help="上下文会话 ID，使用相同 ID 恢复本地历史")
     actions = parser.add_mutually_exclusive_group()
     actions.add_argument("--query", help="只查询已有向量，不重新解析或向量化 PDF")
@@ -46,7 +46,7 @@ def main():
         embedder = DashScopeEmbedder()
         store = create_vector_store(embedding_model=embedder.embedding_id, backend=args.backend)
         try:
-            count = store.count() if hasattr(store, "count") else store.collection.count()
+            count = store.count()
             print(f"已连接向量库，当前 {count} 个片段；未上传文档")
         finally:
             if hasattr(store, "close"):
@@ -56,8 +56,7 @@ def main():
         chat = DeepSeekChat()
         embedder = DashScopeEmbedder()
         store = create_vector_store(embedding_model=embedder.embedding_id, backend=args.backend,
-                                    collection_name=settings.collection_name,
-                                    persist_directory=Path(__file__).resolve().parent / "data" / "chroma")
+                                    collection_name=settings.collection_name)
         context = None
         try:
             context = ContextManager.from_env(chat=chat, session_id=args.session)

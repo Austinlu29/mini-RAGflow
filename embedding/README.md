@@ -1,12 +1,12 @@
 # 切片向量化与云端 Milvus
 
 使用阿里云 `text-embedding-v2` 生成 1536 维向量。模型负责向量化，
-项目默认连接 Zilliz Cloud 的 Free 集群，通过 Milvus 执行余弦检索。
+项目连接 Zilliz Cloud 的 Free 集群，通过 Milvus 执行余弦检索。
 返回结果统一提供 `similarity` 和 `distance = 1 - similarity`，
 分数越高越相似，不能视为正确率或概率。
 
 `DashScopeEmbedder` 现在实现 LangChain `Embeddings` 接口，原来的方法继续可用。
-`vectorstore.langchain.ChunkVectorStore` 将两种后端接入 `VectorStore`，
+`vectorstore.langchain.ChunkVectorStore` 将 Milvus 接入 `VectorStore`，
 `EvidenceRetriever` 直接返回带页码和来源的 `Document`，主问答链按原始余弦阈值过滤。
 完整组件用法与分数尺度见 [LangChain 架构](../README.md#langchain-架构)。
 
@@ -67,19 +67,15 @@ print(f"已保存 {len(ids)} 个片段")
 .\.venv\Scripts\python.exe main.py --index
 # 只查询已有片段，不重新向量化文档
 .\.venv\Scripts\python.exe main.py --query "库存准确率是多少？"
-# 复用本地 Chroma 已有向量迁移到云端，不调用 embedding API
-.\.venv\Scripts\python.exe -m vectorstore.migrate_chroma
 ```
 
 同一文件重复入库会更新固定 ID，全部写入成功后清理旧多余片段。入库命令
-仍会重新调用 embedding API；迁移和仅查询命令不会重新向量化文档。
+仍会重新调用 embedding API；仅查询命令不会重新向量化文档。
 Milvus 查询使用 Strong 一致性验证新数据。分批更新没有跨请求事务保证，
 中途网络失败时可重试同一文件。文档切片减少时会删除该文档的旧多余片段。
 
-原有 Chroma 数据仍在 `data/chroma`，可以通过 `--backend chroma` 或
-`VECTOR_STORE=chroma` 继续使用。切换后端时，请关闭旧连接，使用新后端
-对应的集合名称。Milvus 默认集合来自 `MILVUS_COLLECTION`，Chroma 默认
-集合仍是 `documents`。
+项目仅支持 Milvus。`VECTOR_STORE` 可省略或设为 `milvus`；默认集合来自
+`MILVUS_COLLECTION`，未配置时使用 `miniragflow_chunks`。
 
 每次 API 调用最多 25 条文本。单条上限为 2048 Token，字符数不等于
 Token 数。当前切片器保留完整表格，过长表格可能触发 API 限制，此时

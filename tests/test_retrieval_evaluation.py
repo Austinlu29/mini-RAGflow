@@ -1,4 +1,4 @@
-"""验证多证据指标、数据隔离、缓存以及真实本地向量库评测链路。"""
+"""验证多证据指标、数据隔离、缓存以及模拟 Milvus 评测链路。"""
 
 import contextlib
 import io
@@ -10,7 +10,8 @@ from unittest.mock import patch
 
 from evaluation.crud_dataset import DEFAULT_DATASET, TASKS, build_dataset, digest, load_dataset, validate_dataset
 from evaluation.retrieval import EmbeddingCache, make_chunks, run, score_ranking
-from vectorstore.factory import create_vector_store
+from vectorstore.milvus import MilvusStore
+from tests.milvus_fake import FakeMilvusClient
 
 
 class RetrievalMetricTests(unittest.TestCase):
@@ -122,7 +123,7 @@ class CacheAndIntegrationTests(unittest.TestCase):
             finally:
                 cache.close()
 
-    def test_real_chroma_ranking_mapping_and_reports(self):
+    def test_milvus_ranking_mapping_and_reports(self):
         # 这里的假向量只测试指标/映射链路，用户报告由真实 DashScope/Milvus 单独生成。
         documents = [{"id": f"doc{i}", "text": f"topic {i}"} for i in range(30)]
         questions = [{"id": f"Q{i + 1:02d}", "task": TASKS[i // 10],
@@ -136,7 +137,8 @@ class CacheAndIntegrationTests(unittest.TestCase):
             stores = []
 
             def factory(**options):
-                store = create_vector_store(**options)
+                self.assertEqual(options.pop("backend"), "milvus")
+                store = MilvusStore(**options, uri="https://example.invalid", token="test-only-token")
                 stores.append(store)
                 return store
 
@@ -144,11 +146,13 @@ class CacheAndIntegrationTests(unittest.TestCase):
                 with patch("evaluation.retrieval.PROJECT_ROOT", root), \
                         patch("evaluation.retrieval.DashScopeEmbedder", FakeEmbedder), \
                         patch("evaluation.retrieval.create_vector_store", factory), \
+                        patch("vectorstore.milvus.MilvusClient", return_value=FakeMilvusClient()), \
+                        patch("vectorstore.milvus.load_dotenv"), \
                         contextlib.redirect_stdout(io.StringIO()):
-                    report = run(dataset, backend="chroma", output=root / "output")
+                    report = run(dataset, backend="milvus", output=root / "output")
             finally:
                 for store in stores:
-                    store.client._system.stop()
+                    store.close()
             self.assertEqual(report["metrics"]["hit@1"], 1)
             self.assertEqual(len(report["results"]), 30)
             self.assertEqual(report["results"][12]["retrieved"][0]["document_id"], "doc12")

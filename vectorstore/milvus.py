@@ -180,7 +180,7 @@ class MilvusStore:
         top_k: int = 3,
         source: str | None = None,
     ) -> list[dict]:
-        """返回与 ChromaStore 相同的结果结构；COSINE 分数越大越相似。"""
+        """返回片段、元数据及余弦分数；COSINE 分数越大越相似。"""
         if isinstance(top_k, bool) or not isinstance(top_k, int):
             raise TypeError("top_k 必须是整数")
         if not 1 <= top_k <= 16384:

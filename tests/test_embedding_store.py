@@ -1,19 +1,14 @@
-"""用模拟 API 和真实 ChromaDB 验证向量对齐、持久化与余弦排序。"""
+"""用模拟 API 验证向量对齐、归一化与入库流程。"""
 
 import json
-import subprocess
-import sys
-import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-import chromadb
 import httpx
 
 from document.element import Block
 from embedding.embed import DashScopeEmbedder, embed_chunks, normalize_vectors
-from vectorstore.chromadb import ChromaStore
 
 
 def vector(x, y):
@@ -87,65 +82,6 @@ class EmbeddingTests(unittest.TestCase):
         for size in (0, 26, True, 1.5):
             with self.subTest(size=size), self.assertRaises((TypeError, ValueError)):
                 DashScopeEmbedder(api_key="test", batch_size=size)
-
-
-class ChromaStoreTests(unittest.TestCase):
-    def setUp(self):
-        self.temp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.temp.cleanup)
-        self.store = ChromaStore(embedding_model="test-model", persist_directory=self.temp.name)
-        self.addCleanup(self.store.client._system.stop)
-
-    def test_real_cosine_ranking_metadata_and_persistence(self):
-        ids = self.store.add_chunks([chunk("same"), chunk("orthogonal"), chunk("opposite")],
-                                    [[3, 0], [0, 4], [-5, 0]], source="source.pdf")
-        results = self.store.search([10, 0], top_k=9)
-        self.assertEqual([r["text"] for r in results], ["same", "orthogonal", "opposite"])
-        for result, expected in zip(results, (1.0, 0.0, -1.0)):
-            self.assertAlmostEqual(result["similarity"], expected, places=5)
-        self.assertEqual(results[0]["id"], ids[0])
-        self.assertEqual(results[0]["metadata"]["page_number"], 2)
-        self.assertEqual(results[0]["metadata"]["x0"], 10)
-        self.assertTrue((Path(self.temp.name) / "chroma.sqlite3").is_file())
-        # 在独立进程中重开数据库，确认数据实际落盘。
-        script = ("import sys; from vectorstore.chromadb import ChromaStore; "
-                  "s=ChromaStore(embedding_model='test-model',persist_directory=sys.argv[1]); "
-                  "print(s.collection.count())")
-        result = subprocess.run([sys.executable, "-c", script, self.temp.name],
-                                cwd=Path(__file__).resolve().parents[1], capture_output=True, text=True)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout.strip(), "3")
-
-    def test_reimport_removes_stale_chunks_without_affecting_other_sources(self):
-        original = self.store.add_chunks([chunk("old"), chunk("stale")], [[1, 0], [0, 1]], source="a")
-        self.store.add_chunks([chunk("other")], [[0, 1]], source="b")
-        updated = self.store.add_chunks([chunk("new")], [[1, 0]], source="a")
-        self.assertEqual(updated, original[:1])
-        self.assertEqual(self.store.collection.count(), 2)
-        self.assertEqual(self.store.search([1, 0], source="a")[0]["text"], "new")
-        self.assertEqual(self.store.search([0, 1], source="b")[0]["text"], "other")
-        self.assertEqual(self.store.search([1, 0], source="missing"), [])
-
-    def test_empty_and_invalid_vectors_do_not_write(self):
-        self.assertEqual(self.store.add_chunks([], [], source="a"), [])
-        self.assertEqual(self.store.search([1, 0]), [])
-        for chunks, vectors in (([chunk("a")], []), ([chunk(" ")], [[1, 0]]),
-                                ([chunk("a")], [[0, 0]])):
-            with self.subTest(chunks=chunks), self.assertRaises(ValueError):
-                self.store.add_chunks(chunks, vectors, source="a")
-        self.assertEqual(self.store.collection.count(), 0)
-        for top_k in (0, -1, True, 1.5):
-            with self.subTest(top_k=top_k), self.assertRaises((TypeError, ValueError)):
-                self.store.search([1, 0], top_k=top_k)
-
-    def test_model_and_distance_mismatch_are_rejected(self):
-        with self.assertRaises(ValueError):
-            ChromaStore(embedding_model="different-model", persist_directory=self.temp.name)
-        self.store.client.create_collection(name="wrong-distance", embedding_function=None,
-                                            metadata={"embedding_model": "test-model"})
-        with self.assertRaises(ValueError):
-            ChromaStore(embedding_model="test-model", persist_directory=self.temp.name,
-                        collection_name="wrong-distance")
 
 
 class PipelineTests(unittest.TestCase):

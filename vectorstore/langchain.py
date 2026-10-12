@@ -1,4 +1,4 @@
-"""LangChain 存储/检索接口，复用既有 Milvus、Chroma 集合和稳定 ID。"""
+"""LangChain 存储/检索接口，复用既有 Milvus 集合和稳定 ID。"""
 
 from collections.abc import Iterable
 from math import isfinite

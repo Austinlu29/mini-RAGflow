@@ -22,7 +22,8 @@ from llm.chains import StrictJsonOutputParser, create_json_chain
 from llm.chat import DeepSeekChat
 from RAG.pipeline import create_indexing_chain
 from RAG.qa import DEFAULT_NO_ANSWER_REPLY, QASettings, RAGQuestionAnswerer
-from vectorstore.chromadb import ChromaStore
+from vectorstore.milvus import MilvusStore
+from tests.milvus_fake import FakeMilvusClient
 from vectorstore.langchain import ChunkVectorStore, EvidenceRetriever
 
 
@@ -52,9 +53,13 @@ class LangChainTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.embeddings = TestEmbeddings()
-        self.store = ChromaStore(embedding_model=self.embeddings.embedding_id,
-                                 persist_directory=str(Path(self.temp.name) / "chroma"))
-        self.addCleanup(self.store.client._system.stop)
+        client = FakeMilvusClient()
+        self.enterContext(patch("vectorstore.milvus.MilvusClient", return_value=client))
+        self.enterContext(patch("vectorstore.milvus.load_dotenv"))
+        self.store = MilvusStore(embedding_model=self.embeddings.embedding_id,
+                                 uri="https://example.invalid", token="test-only-token",
+                                 collection_name="langchain_test", dimension=2)
+        self.addCleanup(self.store.close)
         self.vectorstore = ChunkVectorStore(store=self.store, embeddings=self.embeddings)
 
     @staticmethod
@@ -120,7 +125,7 @@ class LangChainTests(unittest.TestCase):
         self.vectorstore.add_documents([self.document("other", source="other.pdf")])
         updated = self.vectorstore.add_documents([self.document("new")])
         self.assertEqual(updated, ids[:1])
-        self.assertEqual(self.store.collection.count(), 2)
+        self.assertEqual(self.store.count(), 2)
         self.assertEqual(self.vectorstore.similarity_search("question", source="manual.pdf")[0].page_content, "new")
 
     def test_mixed_sources_and_missing_pages_fail_before_embedding_or_write(self):
@@ -131,7 +136,7 @@ class LangChainTests(unittest.TestCase):
             with self.subTest(documents=documents), self.assertRaises(ValueError):
                 adapter.add_documents(documents)
         embeddings.embed_documents.assert_not_called()
-        self.assertEqual(self.store.collection.count(), 0)
+        self.assertEqual(self.store.count(), 0)
 
     def test_native_model_prompt_parser_and_secret_exclusion(self):
         model = self.model()

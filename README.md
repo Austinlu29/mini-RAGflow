@@ -1,12 +1,12 @@
 # MiniRAGFlow
 
 一个基于 LangChain 组件与 LCEL 链的 Python RAG 项目，支持 PDF 解析、向量检索、带来源问答和多轮上下文管理。
-使用 DashScope `text-embedding-v2` 向量化、Milvus / Chroma 存储，以及 DeepSeek 生成经校验的原文回答。
+使用 DashScope `text-embedding-v2` 向量化、Milvus 云端存储，以及 DeepSeek 生成经校验的原文回答。
 
 ## 功能与结构
 
 - PDF 文本与表格解析，保留页码、类型和坐标；正文按句子边界切分，标题和表格保持完整。
-- Milvus 云端与 Chroma 本地存储，支持重复导入更新、来源过滤和余弦检索。
+- Milvus 云端存储，支持重复导入更新、来源过滤和余弦检索。
 - 终端交互与单次问答，逐条校验原文摘录和引用来源。
 - 分级上下文压缩、SQLite / gzip 历史归档和同一会话的相关历史恢复。
 - CRUD-RAG 固定子集检索评测，以及无需真实 API 的回归测试。
@@ -26,15 +26,15 @@
 ## LangChain 架构
 
 主流程使用 `langchain-core` 的标准接口；底层布局解析、HTTP 协议和数据库集合格式
-保留项目自己的实现。无需迁移现有 Milvus / Chroma 数据，也无需重新入库；已有
-`main.py` 命令和 `.env` 配置继续使用。
+保留项目自己的实现。现有 Milvus 集合可以直接复用，无需重新入库。
+项目仅支持 Milvus，`VECTOR_STORE` 可省略或设为 `milvus`。
 
 ```mermaid
 flowchart TD
     PDF[PDF 文件] --> Loader[LayoutPDFLoader / Document]
     Loader --> Splitter[LayoutDocumentSplitter]
     Splitter --> Embedding[DashScopeEmbedder / Embeddings]
-    Embedding --> Store[ChunkVectorStore / Milvus 或 Chroma]
+    Embedding --> Store[ChunkVectorStore / Milvus]
     Question[用户问题] --> Rewrite[历史理解与问题改写]
     Rewrite --> Retriever[EvidenceRetriever]
     Store --> Retriever
@@ -73,7 +73,7 @@ chunks = LayoutDocumentSplitter(chunk_size=300, chunk_overlap=50).split_document
 print(chunks[0].page_content, chunks[0].metadata)
 
 # 执行入库链；也可继续使用 index_pdf("data/test.pdf")
-ids = create_indexing_chain(backend="chroma").invoke("data/test.pdf")
+ids = create_indexing_chain().invoke("data/test.pdf")
 ```
 
 ```python
@@ -83,10 +83,10 @@ from RAG.qa import QASettings, RAGQuestionAnswerer
 from vectorstore.factory import create_vector_store
 
 embedder = DashScopeEmbedder()
-store = create_vector_store(embedding_model=embedder.embedding_id, backend="chroma")
+store = create_vector_store(embedding_model=embedder.embedding_id)
 try:
     qa = RAGQuestionAnswerer(embedder=embedder, store=store, chat=DeepSeekChat(), settings=QASettings())
-    answer = qa.invoke("文档中描述了哪些功能？", config={"tags": ["local-rag"]})
+    answer = qa.invoke("文档中描述了哪些功能？", config={"tags": ["milvus-rag"]})
     # qa.ask(...) 兼容旧接口；qa.chain 是可组合的 LangChain Runnable。
     print(answer)
 finally:
@@ -134,7 +134,7 @@ if (-not (Test-Path .env)) { Copy-Item .env.example .env }
 | `CONTEXT_SESSION_ID` | 留空每次新建会话，或指定 ID 恢复同一会话 |
 | `DASHSCOPE_API_KEY` | 与入库时相同的 DashScope 密钥，必填 |
 | `DASHSCOPE_API_HOST` | 与入库时相同的向量服务地址 |
-| `VECTOR_STORE` | `milvus` 或 `chroma`，默认 `milvus` |
+| `VECTOR_STORE` | 仅支持 `milvus`，默认 `milvus` |
 | `MILVUS_URI` / `MILVUS_TOKEN` | Milvus 云端 Endpoint 和凭证 |
 | `MILVUS_COLLECTION` | 已入库的集合名称，默认 `miniragflow_chunks` |
 | `RAG_TOP_K` | 每次检索片段数，默认 5 |
@@ -162,14 +162,14 @@ if (-not (Test-Path .env)) { Copy-Item .env.example .env }
 .\.venv\Scripts\python.exe main.py --query "文档中描述了哪些功能？"
 ```
 
-激活虚拟环境后，也可直接运行 `python main.py`。本地 Chroma 问答读取项目的
-`data/chroma`、`documents` 集合，建议在项目根目录执行入库和调试命令。
+激活虚拟环境后，也可直接运行 `python main.py`。问答读取 `.env` 配置的 Milvus
+云端集合，建议在项目根目录执行入库和调试命令。
 客户端不会自动导入 PDF；知识库无匹配片段时，调用 DeepSeek 生成无答案说明。
 先使用自己的凭证和 `--index` 建立知识库，再运行问答。
 `MILVUS_COLLECTION` 用于 PDF 入库和管理命令；`RAG_COLLECTION` 留空时读取同一集合，
 也可设为自己已建立的其他集合。
 `--check` 检查的是管理命令默认集合，可能与 `RAG_COLLECTION` 不同。
-使用 `--backend chroma` 时，需要将 `RAG_COLLECTION` 留空或设为本地已存在的集合名称。
+`--backend` 仅接受 `milvus`，也可省略使用默认配置。
 
 ## 回答的约束
 
@@ -247,7 +247,7 @@ if (-not (Test-Path .env)) { Copy-Item .env.example .env }
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
 ```
 
-测试使用模拟 API，不消耗真实模型额度；覆盖 AI 无答案说明、伪造内容拦截、
+测试使用模拟 API 和内存 Milvus 客户端，不访问云端、不消耗真实模型额度；覆盖 AI 无答案说明、伪造内容拦截、
 真实原文输出、请求异常、交互退出，以及既有入库和检索功能。
 LangChain 集成测试还覆盖原生聊天模型和回调、LCEL 分支、实际 PDF 加载、
 既有集合适配、两种分数尺度和同来源更新。

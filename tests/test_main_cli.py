@@ -90,17 +90,13 @@ class MainCliTests(unittest.TestCase):
         self.store.close.assert_called_once_with()
         self.index.assert_not_called()
 
-    def test_check_supports_chroma_collection_count(self):
-        store = Mock(spec=["collection"])
-        store.collection.count.return_value = 5
-        self.factory.return_value = store
-        self.run_cli("--check", "--backend", "chroma")
-        self.factory.assert_called_once_with(embedding_model="test-model", backend="chroma")
-        store.collection.count.assert_called_once_with()
+    def test_removed_backend_is_rejected_before_any_api_call(self):
+        with self.assertRaises(SystemExit) as error:
+            self.run_cli("--check", "--backend", "chroma")
+        self.assertEqual(error.exception.code, 2)
+        self.factory.assert_not_called()
         self.index.assert_not_called()
-        self.model.embed_query.assert_not_called()
-        self.model.embed_documents.assert_not_called()
-        self.assertIn("5", self.output.getvalue())
+        self.model_constructor.assert_not_called()
 
     def matching_hit(self):
         return {"text": "MiniRAGFlow 支持 PDF 知识库问答。", "similarity": 0.85,
@@ -207,47 +203,33 @@ class VectorStoreFactoryTests(unittest.TestCase):
         # 保持配置测试完全独立，不读取项目 .env 或连接已有数据库。
         self.enterContext(patch("vectorstore.factory.load_dotenv"))
         self.milvus = self.enterContext(patch("vectorstore.milvus.MilvusStore"))
-        self.chroma = self.enterContext(patch("vectorstore.chromadb.ChromaStore"))
         self.enterContext(patch.dict("os.environ", {}, clear=True))
 
     def test_default_selects_cloud_store(self):
         result = create_vector_store(embedding_model="test-model")
         self.assertIs(result, self.milvus.return_value)
         self.milvus.assert_called_once_with(embedding_model="test-model", collection_name=None)
-        self.chroma.assert_not_called()
 
-    def test_explicit_backend_overrides_environment_and_forwards_chroma_options(self):
-        with patch.dict("os.environ", {"VECTOR_STORE": "milvus"}):
-            result = create_vector_store(embedding_model="test-model", backend="chroma",
-                                         collection_name="other_chunks", persist_directory="temporary_chroma")
-        self.assertIs(result, self.chroma.return_value)
-        self.chroma.assert_called_once_with(embedding_model="test-model", collection_name="other_chunks",
-                                            persist_directory="temporary_chroma")
-        self.milvus.assert_not_called()
-
-    def test_explicit_cloud_backend_overrides_chroma_environment(self):
-        with patch.dict("os.environ", {"VECTOR_STORE": "chroma"}):
+    def test_explicit_cloud_backend_overrides_environment(self):
+        with patch.dict("os.environ", {"VECTOR_STORE": "unsupported"}):
             result = create_vector_store(embedding_model="test-model", backend="milvus",
                                          collection_name="cloud_chunks")
         self.assertIs(result, self.milvus.return_value)
         self.milvus.assert_called_once_with(embedding_model="test-model", collection_name="cloud_chunks")
-        self.chroma.assert_not_called()
 
     def test_environment_is_used_when_backend_is_omitted(self):
-        with patch.dict("os.environ", {"VECTOR_STORE": "chroma"}):
+        with patch.dict("os.environ", {"VECTOR_STORE": "MILVUS"}):
             result = create_vector_store(embedding_model="test-model")
-        self.assertIs(result, self.chroma.return_value)
-        self.chroma.assert_called_once_with(embedding_model="test-model", collection_name="documents",
-                                            persist_directory="data/chroma")
-        self.milvus.assert_not_called()
+        self.assertIs(result, self.milvus.return_value)
+        self.milvus.assert_called_once_with(embedding_model="test-model", collection_name=None)
 
-    def test_invalid_backend_is_rejected_without_opening_any_store(self):
-        with self.assertRaises(ValueError):
-            create_vector_store(embedding_model="test-model", backend="unsupported")
-        with patch.dict("os.environ", {"VECTOR_STORE": "unsupported"}), self.assertRaises(ValueError):
-            create_vector_store(embedding_model="test-model")
+    def test_invalid_backend_is_rejected_without_opening_store(self):
+        for backend in ("chroma", "unsupported", ""):
+            with self.subTest(backend=backend), self.assertRaises(ValueError):
+                create_vector_store(embedding_model="test-model", backend=backend)
+            with patch.dict("os.environ", {"VECTOR_STORE": backend}), self.assertRaises(ValueError):
+                create_vector_store(embedding_model="test-model")
         self.milvus.assert_not_called()
-        self.chroma.assert_not_called()
 
 
 if __name__ == "__main__":

@@ -202,7 +202,9 @@ def run(dataset, *, backend=None, output=DEFAULT_OUTPUT, chunk_size=300,
     import os
 
     load_dotenv(PROJECT_ROOT / ".env")
-    backend = backend or os.getenv("VECTOR_STORE", "milvus").lower()
+    backend = (backend if backend is not None else os.getenv("VECTOR_STORE", "milvus")).lower()
+    if backend != "milvus":
+        raise ValueError("VECTOR_STORE 仅支持 milvus")
     chunks, mapping = make_chunks(dataset["documents"], chunk_size=chunk_size, chunk_overlap=chunk_overlap)
     model = DashScopeEmbedder()
     fingerprint = digest(json.dumps([dataset["dataset_sha256"], chunk_size, chunk_overlap,
@@ -219,11 +221,10 @@ def run(dataset, *, backend=None, output=DEFAULT_OUTPUT, chunk_size=300,
     try:
         vectors = cache.documents([chunk.text for chunk in chunks])
         store = create_vector_store(embedding_model=model.embedding_id, backend=backend,
-                                    collection_name=collection_name,
-                                    persist_directory=PROJECT_ROOT / "data/crud_rag/chroma")
+                                    collection_name=collection_name)
         ids = store.add_chunks(chunks, vectors, source=source)
         index = {chunk_id: info for chunk_id, info in zip(ids, mapping)}
-        count = store.count() if hasattr(store, "count") else store.collection.count()
+        count = store.count()
         if len(ids) != len(chunks) or count != len(chunks):
             raise ValueError("评测集合片段数量不匹配")
         print(f"Indexed {count} chunks; querying 30 questions", flush=True)
@@ -284,7 +285,7 @@ def run(dataset, *, backend=None, output=DEFAULT_OUTPUT, chunk_size=300,
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dataset", type=Path, default=DEFAULT_DATASET)
-    parser.add_argument("--backend", choices=("milvus", "chroma"))
+    parser.add_argument("--backend", choices=("milvus",))
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument("--chunk-size", type=int, default=300)
     parser.add_argument("--chunk-overlap", type=int, default=50)

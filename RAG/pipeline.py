@@ -10,7 +10,7 @@ from vectorstore.langchain import ChunkVectorStore
 
 
 def create_indexing_chain(
-    *, embedder=None, persist_directory="data/chroma", collection_name=None,
+    *, embedder=None, collection_name=None,
     backend=None, chunk_size=300, chunk_overlap=50,
 ):
     """返回 Runnable；invoke 接收 PDF 路径，输出稳定片段 ID。"""
@@ -26,7 +26,7 @@ def create_indexing_chain(
     def persist(state):
         model = state["model"]
         store = create_vector_store(embedding_model=model.embedding_id, backend=backend,
-                                    persist_directory=persist_directory, collection_name=collection_name)
+                                    collection_name=collection_name)
         try:
             vectorstore = ChunkVectorStore(store=store, embeddings=model)
             return vectorstore.add_embeddings(state["documents"], state["vectors"])
@@ -48,7 +48,6 @@ def index_pdf(
     file_path: str | PathLike[str],
     *,
     embedder: DashScopeEmbedder | None = None,
-    persist_directory: str | PathLike[str] = "data/chroma",
     collection_name: str | None = None,
     backend: str | None = None,
     chunk_size: int = 300,
@@ -59,6 +58,6 @@ def index_pdf(
     先完成所有片段的 API 向量化，再写入数据库。API 出错时不会改动
     集合。source 使用文件绝对路径，重复调用会更新同一文件的片段。
     """
-    return create_indexing_chain(embedder=embedder, persist_directory=persist_directory,
+    return create_indexing_chain(embedder=embedder,
                                  collection_name=collection_name, backend=backend,
                                  chunk_size=chunk_size, chunk_overlap=chunk_overlap).invoke(file_path)
